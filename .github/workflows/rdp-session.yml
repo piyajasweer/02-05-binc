@@ -775,68 +775,119 @@ jobs:
 
       - name: Start OpenClaw managed browser
         shell: pwsh
+        continue-on-error: true
         run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
-          $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
-          $env:PLAYWRIGHT_BROWSERS_PATH = "$rdpUserHome\.playwright-browsers"
-          
-          # Wait for gateway to be ready
-          Write-Host "Waiting for OpenClaw gateway to be ready..."
-          $maxWait = 20
+          $ErrorActionPreference = "Continue"
+      
+          Write-Host "Running as:"
+          whoami
+      
+          $userHome = $env:USERPROFILE
+          Write-Host "Using USERPROFILE=$userHome"
+      
+          $env:NPM_CONFIG_PREFIX = "$userHome\.npm-global"
+          $env:PATH = "$userHome\.npm-global;$env:PATH"
+          $env:PLAYWRIGHT_BROWSERS_PATH = "$userHome\.playwright-browsers"
+      
+          Write-Host "OpenClaw binary:"
+          Get-Command openclaw | Format-List *
+      
+          Write-Host "OpenClaw version:"
+          openclaw --version
+      
+          Write-Host "OpenClaw status:"
+          openclaw status --all
+      
+          Write-Host "Gateway status before restart:"
+          openclaw gateway status
+      
+          Write-Host "Checking port 18789..."
+          Get-NetTCPConnection -LocalPort 18789 -ErrorAction SilentlyContinue | Format-Table -AutoSize
+      
+          Write-Host "Running OpenClaw doctor..."
+          openclaw doctor
+      
+          Write-Host "Restarting gateway..."
+          openclaw gateway restart
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Gateway restart failed. Trying install --force then restart..."
+            openclaw gateway install --force
+            openclaw gateway restart
+          }
+      
+          Write-Host "Waiting for OpenClaw gateway to be healthy..."
+          $maxWait = 60
           $waited = 0
+          $gatewayReady = $false
+      
           while ($waited -lt $maxWait) {
             try {
-              $resp = Invoke-WebRequest -Uri "http://127.0.0.1:18789/" -UseBasicParsing -TimeoutSec 2 -ErrorAction SilentlyContinue
+              $resp = Invoke-WebRequest `
+                -Uri "http://127.0.0.1:18789/" `
+                -UseBasicParsing `
+                -TimeoutSec 3 `
+                -ErrorAction Stop
+      
               if ($resp.StatusCode -eq 200 -or $resp.StatusCode -eq 401) {
-                Write-Host "Gateway is ready"
-                break
+                Write-Host "Gateway HTTP endpoint responded with $($resp.StatusCode)"
+      
+                openclaw gateway status
+                if ($LASTEXITCODE -eq 0) {
+                  $gatewayReady = $true
+                  break
+                }
               }
-            } catch {}
-            Start-Sleep -Seconds 2
-            $waited += 2
-          }
-          
-          Write-Host "Starting OpenClaw managed browser (headless, no-sandbox)..."
-          
-          # Use new headless mode (harder to detect than legacy headless)
-          $env:PLAYWRIGHT_CHROMIUM_USE_HEADLESS_NEW = "1"
-          
-          # Start the openclaw browser profile
-          openclaw browser --browser-profile openclaw start 2>&1
-          Start-Sleep -Seconds 5
-          
-          # Check browser status
-          $browserStatus = openclaw browser --browser-profile openclaw status 2>&1
-          Write-Host "Browser status: $browserStatus"
-          
-          # Verify CDP is reachable on the configured port
-          try {
-            $cdpCheck = Invoke-WebRequest -Uri "http://127.0.0.1:18800/json/version" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-            Write-Host "Browser CDP endpoint is reachable on port 18800"
-            
-            # Apply stealth: set realistic user-agent via browser control API
-            $gatewayPort = 18789
-            $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            $body = @{ headers = @{ "User-Agent" = $ua } } | ConvertTo-Json -Compress
-            try {
-              Invoke-WebRequest -Uri "http://127.0.0.1:$gatewayPort/browser/set/headers?profile=openclaw" `
-                -Method POST -UseBasicParsing -TimeoutSec 5 `
-                -Headers @{ "Authorization" = "Bearer openclaw"; "Content-Type" = "application/json" } `
-                -Body $body -ErrorAction Stop | Out-Null
-              Write-Host "Stealth: User-Agent set"
             } catch {
-              Write-Host "WARNING: Could not set User-Agent (non-critical)"
+              Write-Host "Gateway not ready yet: $($_.Exception.Message)"
             }
-            
-            # Apply stealth: set realistic locale and timezone
-            openclaw browser --browser-profile openclaw set locale en-US 2>$null
-            openclaw browser --browser-profile openclaw set timezone America/New_York 2>$null
-            Write-Host "Stealth: locale=en-US, timezone=America/New_York"
-          } catch {
-            Write-Host "WARNING: Browser CDP endpoint not reachable yet (gateway may auto-start it on first use)"
+      
+            Start-Sleep -Seconds 3
+            $waited += 3
           }
-        continue-on-error: true
+      
+          if (-not $gatewayReady) {
+            Write-Host "WARNING: Gateway did not become healthy."
+            Write-Host "Recent OpenClaw logs:"
+            openclaw logs --tail 200
+            exit 0
+          }
+      
+          Write-Host "Configuring managed browser profile..."
+          openclaw config set browser.defaultProfile "openclaw"
+      
+          # Often useful for single-machine Windows browser control.
+          openclaw config set gateway.nodes.browser.mode "off"
+      
+          Write-Host "Starting OpenClaw managed browser..."
+          openclaw browser --browser-profile openclaw start
+          $browserStartExit = $LASTEXITCODE
+      
+          Start-Sleep -Seconds 5
+      
+          Write-Host "Browser status:"
+          openclaw browser --browser-profile openclaw status
+          $browserStatusExit = $LASTEXITCODE
+      
+          Write-Host "Checking CDP endpoint..."
+          try {
+            $cdpCheck = Invoke-WebRequest `
+              -Uri "http://127.0.0.1:18800/json/version" `
+              -UseBasicParsing `
+              -TimeoutSec 5 `
+              -ErrorAction Stop
+      
+            Write-Host "Browser CDP endpoint is reachable on port 18800"
+          } catch {
+            Write-Host "WARNING: Browser CDP endpoint not reachable."
+            Write-Host "Browser start exit code: $browserStartExit"
+            Write-Host "Browser status exit code: $browserStatusExit"
+            Write-Host "Recent OpenClaw logs:"
+            openclaw logs --tail 200
+            exit 0
+          }
+      
+          Write-Host "OpenClaw browser startup step completed."
+          exit 0
 
       - name: Display Connection Info
         shell: pwsh
