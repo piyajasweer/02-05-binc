@@ -309,20 +309,6 @@ jobs:
             Remove-Item $installer -Force -ErrorAction SilentlyContinue
           }
           
-          # VS Code
-          Install-Tool -Name "vscode" -ChocoPkg "vscode.install" `
-            -TestPath "C:\Program Files\Microsoft VS Code\Code.exe" `
-            -DirectUrl "https://update.code.visualstudio.com/latest/win32-x64/stable" `
-            -InstallerArgs "/verysilent /norestart /mergetasks=!runcode,addcontextmenufiles,addcontextmenufolders,addtopath" `
-            -InstallerType "exe"
-          
-          # Notepad++
-          Install-Tool -Name "notepad++" -ChocoPkg "notepadplusplus" `
-            -TestPath "C:\Program Files\Notepad++\notepad++.exe" `
-            -DirectUrl "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.7.6/npp.8.7.6.Installer.x64.exe" `
-            -InstallerArgs "/S" `
-            -InstallerType "exe"
-          
           # Firefox (skip if already installed)
           Install-Tool -Name "firefox" -ChocoPkg "firefox" `
             -TestPath "C:\Program Files\Mozilla Firefox\firefox.exe" `
