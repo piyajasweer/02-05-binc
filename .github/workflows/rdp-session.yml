@@ -24,7 +24,7 @@ env:
 
 jobs:
   rdp-session:
-    runs-on: windows-latest
+    
     timeout-minutes: 358
 
     steps:
@@ -783,7 +783,7 @@ jobs:
           
           # Wait for gateway to be ready
           Write-Host "Waiting for OpenClaw gateway to be ready..."
-          $maxWait = 25
+          $maxWait = 20
           $waited = 0
           while ($waited -lt $maxWait) {
             try {
